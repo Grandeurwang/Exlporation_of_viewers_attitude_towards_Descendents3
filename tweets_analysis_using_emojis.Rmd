@@ -1,0 +1,317 @@
+---
+title: "Do viewers like Descendants?"
+author: "Guanren Wang"
+output: html_notebook
+---
+
+
+```{r,message=FALSE}
+# load library
+library(rtweet)
+library(tidyverse)
+library(stringr)
+library(micropan)
+library(DT)
+library(tidytext)
+library(textstem)
+library(wordcloud)
+```
+
+Descendants 3 is an American musical television film. It is the third installment in the Descendants series, following Descendants and Descendants 2. The film is written by Sara Parriott and Josann McGibbon, and is directed by Kenny Ortega. The film premiered on Disney Channel on August 2, 2019. `r emo::ji("smile")` Since its premiere, it soared to No.1 in daily twitter topic trends.
+
+Below are the top 4 trends and respective number of related tweets:
+```{r}
+trend<-get_trends('United States')
+
+datatable(trend[1:4,]%>%select(trend,tweet_volume),
+          class = 'hover',
+          extensions = 'FixedColumns',
+          options = list(
+          dom = 't',
+          scrollX = TRUE,
+          fixedColumns = list(leftColumns = 2, rightColumns = 1)
+          )
+          )%>%
+    formatStyle(
+    'trend',
+    color='red', 
+    fontWeight = 'bold'
+    )%>%
+  formatStyle(
+    'tweet_volume',
+    color = 'red',
+    background = styleColorBar(trend[1:4,]$tweet_volume, 'yellow'),
+    backgroundSize = '100% 90%',
+    backgroundRepeat = 'no-repeat',
+    backgroundPosition = 'center'
+  )
+```
+
+
+```{r,include=FALSE}
+# authenticate via access token
+token <- create_token(
+  app = "FBLibra",
+  consumer_key = "Huc1ujOOIRtx5HhurOVDeobYv",
+  consumer_secret = "OZiKCJryKBGyBVC9eMSyyhiq2GQIb2d0sRbinXKcAvtEyP9aPV",
+  access_token = "1154094501788442624-itMMXR2Se4BHug8RJX5hiof1yJ79RO",
+  access_secret = "X6dO9gYNcFAAluddrZBhm9JWBXOLktzRzzkIVkr2jo5X3")
+```
+
+# Data Manipulation
+### 1.Search data
+
+Here, we use `search_tweets` in `rtweet` package to extract tweets about Descendants 3.
+
+`search_tweets` will return a tibble containing 90 columns including user_id, tweets and many other information. However, we only need tweets.
+```{r}
+descendant3<-search_tweets(q='#Descendants3',n=60000,retryonratelimit=T,type = 'mixed',lang='en',include_rts = F)
+```
+
+### 2.Remove tweets posted by robot
+
+Twitter robots post duplicate or similar tweets every now and then. These tweets may include emojis which could bias our results. As a result, we need to remove them. One of the way is to remove tweets from twiiter robot website. There is a column called *source* in the dataframe returned by `search_tweet`.
+```{r}
+a<-descendant3$source
+
+mon_thought=descendant3%>%filter(source %in% a[-grep('bot',a)])
+
+#remove tweets with same text
+count_of_text=mon_thought%>%
+  count(text,user_id)%>%
+  arrange(desc(n),text)
+
+mon_thought<-mon_thought%>%
+  inner_join(count_of_text%>%
+               filter(n==1)%>%
+               select(user_id,text))
+
+#remove tweets with same mentioned users and hashtags
+dense_mentioned_user_id=c()
+dense_hashtags=c()
+for (i in 1:length(mon_thought$mentions_user_id)) {
+  dense_mentioned_user_id<-c(dense_mentioned_user_id,paste(
+    unlist(mon_thought$mentions_user_id[i]),collapse = '')
+    )
+  dense_hashtags<-c(dense_hashtags,paste(
+    unlist(mon_thought$hashtags[i]),collapse = '')
+    )
+
+}
+
+count_of_hashtags_and_mentioned_users=
+  data.frame(user_id=mon_thought$user_id,dense_hashtags,dense_mentioned_user_id)%>%
+  filter(dense_mentioned_user_id!='NA')%>%
+  group_by(user_id,dense_hashtags,dense_mentioned_user_id)%>%
+  count(user_id,dense_hashtags,dense_mentioned_user_id)%>%
+  arrange(desc(n))%>%
+  filter(n>=3)
+
+mon_thought=mon_thought%>%
+  filter(!(mon_thought$user_id %in% count_of_hashtags_and_mentioned_users$user_id))
+```
+
+### 3.Calculate frequency of emojis
+
+We find emojis by matching Unicode and joining with `emojis` dataset. `emojis` is a dataset included in package `rtweet`, it contains Unicode for 2623 emojis and description of them.
+```{r}
+# match Unicode of emojis
+list_emoji<-gregexpr('\\p{So}|\\p{C}', mon_thought$text, perl = TRUE,extract = T)
+
+# count the number of apperances for each emoji
+count_emoji<-data.frame(
+  emoji=unlist(list_emoji)
+  )%>%group_by(emoji)%>%
+  count()%>%
+  arrange(desc(n))
+
+# convert Unicode from factor to string(character)
+count_emoji$emoji<-as.character(count_emoji$emoji)
+names(count_emoji)[1]<-'code'
+
+# join the table with emojis from rtweet
+count_emoji<-count_emoji%>%
+  inner_join(emojis,by='code')
+
+count_emoji$n<-round(count_emoji$n*1000/dim(count_of_text)[1],digits = 2)
+names(count_emoji)<-c('emoji','Frequency(per 1000 tweets)','emoji name')
+```
+
+# Most frequent emojis
+
+```{r,fig.showtext = TRUE}
+library(emojifont)
+library(gridSVG)
+ggplot(count_emoji[1:10,], aes(`emoji name`,`Frequency(per 1000 tweets)`, label = emoji),) + 
+  geom_bar(stat = "identity") +
+  geom_text(family = "EmojiOne", size = 6, vjust = -.1) +
+  scale_x_discrete(breaks = count_emoji$description, labels = NULL)+
+  xlab('emojis')+ylab('Overall frequency (per 1000 tweets)')+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_text(size = 8, colour = 'black'),
+        axis.text.y  = element_text(size = 8, colour = 'black'),
+    axis.ticks.x=element_blank())+theme_bw()
+ps = grid.export("emoji.svg", addClass=T)
+
+datatable(count_emoji,class = 'cell-border')%>%
+  formatStyle(
+    'emoji name',
+    color='red', 
+    backgroundColor = 'orange', 
+    fontWeight = 'italic'
+    )%>%
+  formatStyle(
+    'Frequency(per 1000 tweets)',
+    color = 'red',
+    background = styleColorBar(count_emoji$`Frequency(per 1000 tweets)`, 'yellow'),
+    backgroundSize = '100% 90%',
+    backgroundRepeat = 'no-repeat',
+    backgroundPosition = 'center'
+  )
+```
+
+![](/Users/guanren/emoji.svg){width=1000px}
+
+Here we go`r emo ::ji('muscle')`! 3 out of 10 emojis are negative, especially the most frequent emoji`r "\U0001f62d"`. Is Descendants 3 very touching? However, what is more surprising is that the third most frequent emoji `r "\U0001f602"` seems to express exactly opposite sentiment to the most frequent emoji `r "\U0001f62d"`. So why on earth is this?
+
+
+# Wordcloud
+Let's dig deeper into the data`r "\U0001f609"`. We could find out the most frequent words in tweets that include 3 most frequent emojis respectively and we will know viewers' true emotion.
+
+To do this, we need to firstly [tokenize](https://en.wikipedia.org/wiki/Text_segmentation#Word_segmentation) sentences (dividing words) to single words. Then, remove [stop words](https://en.wikipedia.org/wiki/Stop_words), URL, punctuations, emojis and hashtags. Last, [lemmatize](https://en.wikipedia.org/wiki/Lemmatisation) the word and count the frequency. 
+
+`tidytext` and `textstem` provide many powerful functions to handle these problems.
+
+### wordcloud for `r "\U0001f62d"`
+
+```{r,message=FALSE,warning=FALSE}
+
+# find tweets with loudly_crying_face
+loudly_crying_face<-mon_thought[grep(count_emoji[1,1]$emoji,mon_thought$text),]%>%
+  select(text)
+
+# tokenization and remove stop words, url and punctuations
+loudly_crying_face<-loudly_crying_face%>%
+  unnest_tokens(output = 'word',
+                input = 'text',
+                token = 'tweets',
+                to_lower = T,
+                strip_punct=T,
+                strip_url=T)%>%
+  anti_join(stop_words)
+
+# remove emojis
+loudly_crying_face<-loudly_crying_face[!grepl('\\p{So}|\\p{C}', loudly_crying_face$word, perl = TRUE),]
+
+#remove hashtag (#descendants3)
+loudly_crying_face<-loudly_crying_face%>%
+  filter(word!='#descendants3')
+
+#lemmatization
+loudly_crying_face$word<-lemmatize_words(loudly_crying_face$word)
+
+# count
+loudly_crying_face<-loudly_crying_face%>%
+  group_by(word)%>%
+  count(word)%>%
+  arrange(desc(n))%>%
+  filter(word!='im' & word!='3'& word!='2')
+
+#wordcloud
+pal <- c("#FDE725FF", "#73D055FF", "#1F968BFF","#2D708EFF", "#481567FF")
+set.seed(123)
+loudly_crying_face[1:50,]%>%
+  with(wordcloud(word, n, max.words = 50,random.color = F,random.order = F,colors = pal))
+```
+
+### wordcloud for `r "❤"`
+
+```{r,message=FALSE,warning=FALSE}
+
+# find tweets with heart
+heart<-mon_thought[grep(count_emoji[2,1]$emoji,mon_thought$text),]%>%
+  select(text)
+
+# tokenization and remove stop words, url and punctuations
+heart<-heart%>%
+  unnest_tokens(output = 'word',
+                input = 'text',
+                token = 'tweets',
+                to_lower = T,
+                strip_punct=T,
+                strip_url=T)%>%
+  anti_join(stop_words)
+
+# remove emojis
+heart<-heart[!grepl('\\p{So}|\\p{C}', heart$word, perl = TRUE),]
+
+#remove hashtag (#descendants3)
+heart<-heart%>%
+  filter(word!='#descendants3')
+
+#lemmatization
+heart$word<-lemmatize_words(heart$word)
+
+# count
+heart<-heart%>%
+  group_by(word)%>%
+  count(word)%>%
+  arrange(desc(n))%>%
+  filter(word!='im' & word!='3'& word!='2')
+
+#wordcloud
+pal <- c("#FDE725FF", "#73D055FF", "#1F968BFF","#2D708EFF", "#481567FF")
+set.seed(123)
+heart[1:50,]%>%
+  with(wordcloud(word, n, max.words = 50,random.color = F,random.order = F,colors = pal))
+```
+
+'Cameron' and 'Boyce' appeared in a large pencatage of tweets containing `r "\U0001f62d"` and `r "❤"`. In addirion, '#ripcameronboyce', 'miss' and 'tear' appeared many times as well. The reason for this is Cameron Boyce just passed away on July 6, 2019 at the age of 20 due to a complication of epilepsy. Thus, when descendants 3 comes out, many descendant series fans who are in great grief expressed their nostalgia to Cameron Boyce on twitter.
+
+### wordcloud for `r "\U0001f602"`
+
+```{r,message=FALSE,warning=FALSE}
+
+# find tweets with face_with_tears_of_joy
+face_with_tears_of_joy<-mon_thought[grep(count_emoji[3,1]$emoji,mon_thought$text),]%>%
+  select(text)
+
+# tokenization and remove stop words, url and punctuations
+face_with_tears_of_joy<-face_with_tears_of_joy%>%
+  unnest_tokens(output = 'word',
+                input = 'text',
+                token = 'tweets',
+                to_lower = T,
+                strip_punct=T,
+                strip_url=T)%>%
+  anti_join(stop_words)
+
+# remove emojis
+face_with_tears_of_joy<-face_with_tears_of_joy[!grepl('\\p{So}|\\p{C}', face_with_tears_of_joy$word, perl = TRUE),]
+
+#remove hashtag (#descendants3)
+face_with_tears_of_joy<-face_with_tears_of_joy%>%
+  filter(word!='#descendants3')
+
+#lemmatization
+face_with_tears_of_joy$word<-lemmatize_words(face_with_tears_of_joy$word)
+
+# count
+face_with_tears_of_joy<-face_with_tears_of_joy%>%
+  group_by(word)%>%
+  count(word)%>%
+  arrange(desc(n))%>%
+  filter(word!='im' & word!='3'& word!='2')
+
+#wordcloud
+pal <- c("#FDE725FF", "#73D055FF", "#1F968BFF","#2D708EFF", "#481567FF")
+set.seed(123)
+face_with_tears_of_joy[1:50,]%>%
+  with(wordcloud(word, n, max.words = 50,random.color = F,random.order = F,colors = pal))
+```
+
+The most frequent words in this wordcloud are essentially names of actors, like 'mal', 'evie' and 'audrey'. Compared to mournful fans aforementioned, fans using `r "\U0001f602"` apparently focused more on Descendants 3 itself. Tweets they posted indicates that they really enjoyed the TV film.
+
+# Conclusion
+
+In general, according to the most frequent emojis and their assiciated words, most viewers gave a postive feedback on Descendants 3 (lamenting for Cameron Boyce is a kind of positive feedback to some extent).
